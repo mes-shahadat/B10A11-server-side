@@ -2,6 +2,7 @@ const { MongoClient, ServerApiVersion } = require('mongodb');
 const express = require('express')
 var cookieParser = require('cookie-parser')
 var cors = require('cors')
+var jwt = require('jsonwebtoken');
 require('dotenv').config()
 
 const app = express()
@@ -35,6 +36,30 @@ async function run() {
         app.get('/', (req, res) => {
 
             res.send('car rental server is running...')
+        })
+
+        app.get('/user/:email', async (req, res) => {
+
+            const email = req.params.email;
+
+            const result = await allUser.findOne({ email: email });
+
+            if (result) {
+
+                const token = jwt.sign({ id: result?._id, email: result?.email }, jwtSecret);
+
+                res.cookie("token", token, {
+                    httpOnly: true
+                })
+
+                res.json({ message: "user found" })
+            }
+            else {
+                res.clearCookie("token")
+                res.status(401).json({ error: "user not found" })
+            }
+
+
         })
 
         // POST
