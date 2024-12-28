@@ -89,29 +89,53 @@ async function run() {
 
         app.get("/my-cars", verifyToken, async (req, res) => {
 
-            const date = req.query.date === "desc" ? -1 : 1;
-            const price = req.query.price === "desc" ? -1 : 1;
+            try {
+                const date = req.query.date === "desc" ? -1 : 1;
+                const price = req.query.price === "desc" ? -1 : 1;
+                const limit = parseInt(req.query.limit) || 5;
+                const page = parseInt(req.query.page) -1 || 0;
 
-            const cursor = allCar.find(
-                {
-                    ownerId: new ObjectId(req.user.id)
-                }
-            ).sort(
-                {
-                    dailyPrice: price,
-                    createdAt: date
-                }
-            ).project(
-                {
-                    ownerId: false,
-                    bookingCount: false,
-                    updatedAt: false
-                }
-            )
+                const cursor = allCar.find(
+                    {
+                        ownerId: new ObjectId(req.user.id)
+                    }
+                )
+                .sort(
+                    {
+                        dailyPrice: price,
+                        createdAt: date
+                    }
+                )
+                .limit(limit)
+                .skip(limit * page)
+                .project(
+                    {
+                        ownerId: false,
+                        bookingCount: false,
+                        updatedAt: false
+                    }
+                )
 
-            const result = await cursor.toArray()
+                
+                const cursor2 = allCar.countDocuments(
+                    {
+                        ownerId: new ObjectId(req.user.id)
+                    }
+                )
 
-            res.json(result)
+                const [result, count] = await Promise.all([cursor.toArray(), cursor2])
+
+                res.json(
+                    {
+                        totalItemCount: count,
+                        estimatedViewCount: parseInt(req.query.page) * limit, 
+                        doc: result
+                    }
+                )
+            }
+            catch (err) {
+                res.json({ error: err.message })
+            }
         })
 
         // POST
@@ -126,15 +150,20 @@ async function run() {
 
         app.post("/car", verifyToken, async (req, res) => {
 
-            const doc = req.body
-            const date = new Date()
-            doc.ownerId = new ObjectId(req.user.id);
-            doc.createdAt = date.toISOString()
-            doc.updatedAt = date.toISOString()
+            try {
+                const doc = req.body
+                const date = new Date()
+                doc.ownerId = new ObjectId(req.user.id);
+                doc.createdAt = date.toISOString()
+                doc.updatedAt = date.toISOString()
 
-            const result = await allCar.insertOne(doc);
+                const result = await allCar.insertOne(doc);
 
-            res.json(result)
+                res.json(result)
+            }
+            catch (err) {
+                res.json({ error: err.message })
+            }
 
         })
 
@@ -162,7 +191,7 @@ async function run() {
                     res.json(result)
                 }
                 else {
-                    res.json({ error: "not your post" })
+                    res.json({ error: "post not found" })
                 }
             }
             catch (err) {
@@ -177,6 +206,31 @@ async function run() {
 
             res.clearCookie("token")
             res.json({ message: "cookie cleared" })
+        })
+
+        app.delete("/car/:id", verifyToken, async (req, res) => {
+
+            try {
+                const id = new ObjectId(req.params.id)
+                const deletingDoc = await allCar.findOne(
+                    { _id: id },
+                    { projection: { ownerId: true } }
+                )
+
+                if (deletingDoc?.ownerId.toString() === req.user.id) {
+
+                    const result = await allCar.deleteOne({ _id: id })
+
+                    res.json(result);
+                }
+                else {
+                    res.json({ error: "post not found" })
+                }
+            }
+            catch (err) {
+                res.json({ error: err.message })
+            }
+
         })
 
     } finally {
