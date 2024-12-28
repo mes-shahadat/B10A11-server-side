@@ -139,6 +139,39 @@ async function run() {
         })
 
 
+        // PATCH
+        app.patch("/car/:id", verifyToken, async (req, res) => {
+
+            try {
+                const id = new ObjectId(req.params.id)
+                const updatingDoc = await allCar.findOne(
+                    { _id: id },
+                    { projection: { ownerId: true } }
+                )
+
+                if (updatingDoc?.ownerId?.toString() === req.user.id) {
+
+                    const result = await allCar.updateOne(
+                        { _id: id },
+                        {
+                            $set: {
+                                ...req.body
+                            }
+                        }
+                    )
+                    res.json(result)
+                }
+                else {
+                    res.json({ error: "not your post" })
+                }
+            }
+            catch (err) {
+                res.json({ error: err.message })
+            }
+
+        })
+
+
         // DELETE
         app.delete("/jwt", async (req, res) => {
 
