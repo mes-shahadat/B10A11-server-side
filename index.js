@@ -85,6 +85,14 @@ async function run() {
 
         })
 
+
+        // DELETE
+        app.delete("/jwt", async (req, res) => {
+
+            res.clearCookie("token")
+            res.json({message: "cookie cleared"})
+        })
+
     } finally {
 
         console.log("finally")
