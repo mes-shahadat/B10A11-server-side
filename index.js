@@ -87,6 +87,33 @@ async function run() {
 
         })
 
+        app.get("/my-cars", verifyToken, async (req, res) => {
+
+            const date = req.query.date === "desc" ? -1 : 1;
+            const price = req.query.price === "desc" ? -1 : 1;
+
+            const cursor = allCar.find(
+                {
+                    ownerId: new ObjectId(req.user.id)
+                }
+            ).sort(
+                {
+                    dailyPrice: price,
+                    createdAt: date
+                }
+            ).project(
+                {
+                    ownerId: false,
+                    bookingCount: false,
+                    updatedAt: false
+                }
+            )
+
+            const result = await cursor.toArray()
+
+            res.json(result)
+        })
+
         // POST
         app.post('/user', async (req, res) => {
 
@@ -104,7 +131,7 @@ async function run() {
             doc.ownerId = new ObjectId(req.user.id);
             doc.createdAt = date.toISOString()
             doc.updatedAt = date.toISOString()
-            
+
             const result = await allCar.insertOne(doc);
 
             res.json(result)
