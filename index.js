@@ -7,6 +7,7 @@ const app = express()
 const port = process.env.PORT || 5000;
 
 app.use(cors())
+app.use(express.json())
 
 const uri = process.env.DB_URI;
 
@@ -20,11 +21,30 @@ const client = new MongoClient(uri, {
 });
 
 async function run() {
-    
+
     try {
 
+        const database = client.db("car_rental");
+        const allCar = database.collection("all cars");
+
+        // GET
         app.get('/', (req, res) => {
+
             res.send('car rental server is running...')
+        })
+
+        // POST
+        app.post("/car", async (req, res) => {
+
+            const doc = req.body
+            const date = new Date()
+            doc.createdAt = date.toISOString()
+            doc.updatedAt = date.toISOString()
+
+            const result = await allCar.insertOne(doc);
+
+            res.json(result)
+
         })
 
     } finally {
