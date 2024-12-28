@@ -1,4 +1,4 @@
-const { MongoClient, ServerApiVersion } = require('mongodb');
+const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const express = require('express')
 var cookieParser = require('cookie-parser')
 var cors = require('cors')
@@ -11,6 +11,31 @@ const port = process.env.PORT || 5000;
 app.use(cors())
 app.use(cookieParser())
 app.use(express.json())
+
+const verifyToken = (req, res, next) => {
+
+    if (req.cookies.token) {
+
+        const token = req.cookies.token;
+
+        jwt.verify(token, jwtSecret, (err, token) => {
+
+            if (err) {
+
+                res.clearCookie("token")
+                res.status(401).json({ error: "token is invalid" })
+            }
+            else {
+                req.user = token
+                next()
+            }
+        });
+
+    }
+    else {
+        res.status(401).json({ error: "token not found" })
+    }
+}
 
 const uri = process.env.DB_URI;
 const jwtSecret = process.env.JWT_SECRET
@@ -65,20 +90,21 @@ async function run() {
         // POST
         app.post('/user', async (req, res) => {
 
-            const doc = req.body
+            const doc = req.body;
 
             const result = await allUser.insertOne(doc);
 
             res.json(result)
         })
 
-        app.post("/car", async (req, res) => {
+        app.post("/car", verifyToken, async (req, res) => {
 
             const doc = req.body
             const date = new Date()
+            doc.ownerId = new ObjectId(req.user.id);
             doc.createdAt = date.toISOString()
             doc.updatedAt = date.toISOString()
-
+            
             const result = await allCar.insertOne(doc);
 
             res.json(result)
@@ -90,7 +116,7 @@ async function run() {
         app.delete("/jwt", async (req, res) => {
 
             res.clearCookie("token")
-            res.json({message: "cookie cleared"})
+            res.json({ message: "cookie cleared" })
         })
 
     } finally {
