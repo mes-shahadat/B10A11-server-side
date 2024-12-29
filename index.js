@@ -93,30 +93,30 @@ async function run() {
                 const date = req.query.date === "desc" ? -1 : 1;
                 const price = req.query.price === "desc" ? -1 : 1;
                 const limit = parseInt(req.query.limit) || 5;
-                const page = parseInt(req.query.page) -1 || 0;
+                const page = parseInt(req.query.page) - 1 || 0;
 
                 const cursor = allCar.find(
                     {
                         ownerId: new ObjectId(req.user.id)
                     }
                 )
-                .sort(
-                    {
-                        dailyPrice: price,
-                        createdAt: date
-                    }
-                )
-                .limit(limit)
-                .skip(limit * page)
-                .project(
-                    {
-                        ownerId: false,
-                        bookingCount: false,
-                        updatedAt: false
-                    }
-                )
+                    .sort(
+                        {
+                            dailyPrice: price,
+                            createdAt: date
+                        }
+                    )
+                    .limit(limit)
+                    .skip(limit * page)
+                    .project(
+                        {
+                            ownerId: false,
+                            bookingCount: false,
+                            updatedAt: false
+                        }
+                    )
 
-                
+
                 const cursor2 = allCar.countDocuments(
                     {
                         ownerId: new ObjectId(req.user.id)
@@ -128,7 +128,67 @@ async function run() {
                 res.json(
                     {
                         totalItemCount: count,
-                        estimatedViewCount: parseInt(req.query.page) * limit, 
+                        estimatedViewCount: parseInt(req.query.page) * limit,
+                        doc: result
+                    }
+                )
+            }
+            catch (err) {
+                res.json({ error: err.message })
+            }
+        })
+
+        app.get("/available-cars", async (req, res) => {
+
+            try {
+                const date = req.query.date === "desc" ? -1 : 1;
+                const price = req.query.price === "desc" ? -1 : 1;
+                const limit = parseInt(req.query.limit) || 5;
+                const page = parseInt(req.query.page) - 1 || 0;
+                const model = req.query.model
+                const brand = req.query.brand
+                const location = req.query.location
+                const obj = {};
+
+                if (model) {
+                    obj.model = { $regex: req.query.model, $options: "i" }
+                }
+                else if (brand) {
+                    obj.brand = { $regex: req.query.brand, $options: "i" }
+                }
+                else if (location) {
+                    obj.location = { $regex: req.query.location, $options: "i" }
+                }
+                else {
+                    obj.availability = true;
+                }
+
+                const cursor = allCar.find(obj)
+                    .sort(
+                        {
+                            dailyPrice: price,
+                            createdAt: date
+                        }
+                    )
+                    .limit(limit)
+                    .skip(limit * page)
+                    .project(
+                        {
+                            ownerId: false,
+                            bookingCount: false,
+                            updatedAt: false
+                        }
+                    )
+
+
+                const cursor2 = allCar.countDocuments(obj)
+
+                const [result, count] = await Promise.all([cursor.toArray(), cursor2])
+
+                res.json(
+                    {
+                        totalItemCount: count,
+                        estimatedViewCount: parseInt(req.query.page) * limit,
                         doc: result
                     }
                 )
