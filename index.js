@@ -56,6 +56,7 @@ async function run() {
         const database = client.db("car_rental");
         const allUser = database.collection("all users");
         const allCar = database.collection("all cars");
+        const allBooking = database.collection("all bookings");
 
         // GET
         app.get('/', (req, res) => {
@@ -175,7 +176,6 @@ async function run() {
                     .project(
                         {
                             ownerId: false,
-                            bookingCount: false,
                             updatedAt: false
                         }
                     )
@@ -198,14 +198,34 @@ async function run() {
             }
         })
 
-        app.get('/car/:id', verifyToken, async (req, res) =>  {
+        app.get('/car/:id', verifyToken, async (req, res) => {
 
             const id = new ObjectId(req.params.id)
             const result = await allCar.findOne(
-                {_id: id}
+                { _id: id }
             )
-            
-            res.json({result})
+
+            res.json({ result })
+        })
+
+        app.get("/booking-schedules/:id", verifyToken, async (req, res) => {
+
+            const id = new ObjectId(req.params.id)
+            const result = await allBooking.find(
+                {
+                    carId: id,
+                    status: { $nin: ["canceled", "completed"] }
+                },
+                {
+                    projection: {
+                        _id: false,
+                        pickupDate: true,
+                        dropoffDate: true
+                    }
+                }
+            ).toArray()
+
+            res.json({ result })
         })
 
         // POST
@@ -237,11 +257,96 @@ async function run() {
 
         })
 
+        app.post("/booking", verifyToken, async (req, res) => {
+
+            try {
+                const data = req.body;
+                data.carId = new ObjectId(data.carId)
+                data.userId = new ObjectId(req.user.id)
+                data.status = "pending"
+
+                const pickDate = new Date(data.pickupDate);
+                const dropDate = new Date(data.dropoffDate);
+
+                const carSchedules = await allBooking.find(
+                    {
+                        carId: data.carId,
+                        status: { $nin: ["canceled", "completed"] }
+                    },
+                    {
+                        projection: {
+                            _id: false,
+                            pickupDate: true,
+                            dropoffDate: true
+                        }
+                    }
+                ).toArray()
+
+                // pickup date & dropoff date validation
+                for (let i = 0; i < carSchedules.length; i++) {
+
+                    let curPickDate = new Date(carSchedules[i].pickupDate)
+                    let curDropDate = new Date(carSchedules[i].dropoffDate)
+
+                    if ((pickDate.getTime() <= curDropDate.getTime() && pickDate.getTime() >= curPickDate.getTime())) {
+                        return res.json({ error: `this car is already scheduled on ${data.pickupDate} by someone` })
+                    }
+                    else if ((dropDate.getTime() >= curPickDate.getTime() && dropDate.getTime() <= curDropDate.getTime())) {
+                        return res.json({ error: `this car is already scheduled on ${data.dropoffDate} by someone` })
+                    }
+                    else if ((curPickDate.getTime() <= dropDate.getTime() && curPickDate.getTime() >= pickDate.getTime())) {
+                        return res.json({ error: `picked date range is overlapping with an booked schedule` })
+                    }
+                    // else if ((curDropDate.getTime() >= pickDate.getTime() && curDropDate.getTime() <= dropDate.getTime())) {
+                    //     return res.json({error: `dropoff date is overlapping with someone else's schedule`})
+                    // }
+
+                }
+
+
+                const oneDay = 24 * 60 * 60 * 1000;
+                const diffDays = Math.round(Math.abs((pickDate - dropDate) / oneDay));
+
+                const { dailyPrice, ownerId } = await allCar.findOne(
+                    { _id: data.carId },
+                    {
+                        projection: {
+                            _id: false,
+                            dailyPrice: true,
+                            ownerId: true
+                        }
+                    }
+                )
+
+                data.ownerId = new ObjectId(ownerId)
+                data.totalPrice = dailyPrice * diffDays;
+
+                if (req.user.id === ownerId.toString()) {
+                    return res.json({ error: "renting own cars are not allowed !" })
+                }
+
+                const result = await allBooking.insertOne(data);
+
+                allCar.updateOne(
+                    { _id: data.carId },
+                    { $inc: { bookingCount: 1 } }
+                )
+
+                res.json({ result })
+            }
+            catch (err) {
+                res.json({ error: err.message })
+            }
+
+        })
 
         // PATCH
         app.patch("/car/:id", verifyToken, async (req, res) => {
 
             try {
+
+                delete req.body?.bookingCount
+
                 const id = new ObjectId(req.params.id)
                 const updatingDoc = await allCar.findOne(
                     { _id: id },
