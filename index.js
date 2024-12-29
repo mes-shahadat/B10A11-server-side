@@ -66,11 +66,14 @@ async function run() {
 
         app.get('/user/:email', async (req, res) => {
 
-            const email = req.params.email;
+            const email = req.params.email.split("&")[0];
+            const password = req.params.email.split("&")[1];
 
             const result = await allUser.findOne({ email: email });
 
-            if (result) {
+            result.password === undefined ? result.password = "🔒" : null
+
+            if (result && password === result.password) {
 
                 const token = jwt.sign({ id: result?._id, email: result?.email }, jwtSecret);
 
@@ -232,20 +235,41 @@ async function run() {
         app.post('/user', async (req, res) => {
 
             const doc = req.body;
+            let insertResult = { message: "user found" };
 
-            const result = await allUser.insertOne(doc);
+            let user = await allUser.findOne(
+                { email: { $regex: req.body.email, $options: "i" } }
+            )
 
-            res.json(result)
+            if (!user) {
+                const result = await allUser.insertOne(doc);
+                user = doc;
+                insertResult = result
+            }
+            else if (!doc.login) {
+                return res.json({ error: "email already exists !" })
+            }
+
+            if (doc.login) {
+
+                const token = jwt.sign({ id: user?._id, email: user?.email }, jwtSecret);
+
+                res.cookie("token", token, {
+                    httpOnly: true
+                })
+
+            }
+
+            res.json({ ...insertResult })
         })
 
         app.post("/car", verifyToken, async (req, res) => {
 
             try {
                 const doc = req.body
-                const date = new Date()
                 doc.ownerId = new ObjectId(req.user.id);
-                doc.createdAt = date.toISOString()
-                doc.updatedAt = date.toISOString()
+                doc.createdAt = new Date()
+                doc.updatedAt = new Date()
 
                 const result = await allCar.insertOne(doc);
 
@@ -264,9 +288,12 @@ async function run() {
                 data.carId = new ObjectId(data.carId)
                 data.userId = new ObjectId(req.user.id)
                 data.status = "pending"
-
+                
                 const pickDate = new Date(data.pickupDate);
                 const dropDate = new Date(data.dropoffDate);
+
+                data.pickupDate = pickDate
+                data.dropoffDate = dropDate
 
                 const carSchedules = await allBooking.find(
                     {
@@ -289,10 +316,10 @@ async function run() {
                     let curDropDate = new Date(carSchedules[i].dropoffDate)
 
                     if ((pickDate.getTime() <= curDropDate.getTime() && pickDate.getTime() >= curPickDate.getTime())) {
-                        return res.json({ error: `this car is already scheduled on ${data.pickupDate} by someone` })
+                        return res.json({ error: `this car is already scheduled on ${data.pickupDate.toDateString()} by someone` })
                     }
                     else if ((dropDate.getTime() >= curPickDate.getTime() && dropDate.getTime() <= curDropDate.getTime())) {
-                        return res.json({ error: `this car is already scheduled on ${data.dropoffDate} by someone` })
+                        return res.json({ error: `this car is already scheduled on ${data.dropoffDate.toDateString()} by someone` })
                     }
                     else if ((curPickDate.getTime() <= dropDate.getTime() && curPickDate.getTime() >= pickDate.getTime())) {
                         return res.json({ error: `picked date range is overlapping with an booked schedule` })
@@ -324,6 +351,9 @@ async function run() {
                 if (req.user.id === ownerId.toString()) {
                     return res.json({ error: "renting own cars are not allowed !" })
                 }
+                
+                data.createdAt = new Date()
+                data.updatedAt = new Date()
 
                 const result = await allBooking.insertOne(data);
 
@@ -341,6 +371,20 @@ async function run() {
         })
 
         // PATCH
+        app.patch("/user", verifyToken, async(req, res) => {
+            
+            let user = await allUser.updateOne(
+                { _id: new ObjectId(req.user.id) },
+                {
+                    $set : {
+                        ...req.body
+                    }
+                }
+            )
+
+            res.json({user})
+        })
+
         app.patch("/car/:id", verifyToken, async (req, res) => {
 
             try {
