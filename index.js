@@ -198,6 +198,16 @@ async function run() {
             }
         })
 
+        app.get('/car/:id', verifyToken, async (req, res) =>  {
+
+            const id = new ObjectId(req.params.id)
+            const result = await allCar.findOne(
+                {_id: id}
+            )
+            
+            res.json({result})
+        })
+
         // POST
         app.post('/user', async (req, res) => {
 
