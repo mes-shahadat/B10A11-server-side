@@ -3,6 +3,7 @@ const express = require('express')
 var cookieParser = require('cookie-parser')
 var cors = require('cors')
 var jwt = require('jsonwebtoken');
+const { replace } = require('react-router-dom');
 require('dotenv').config()
 
 const app = express()
@@ -231,6 +232,78 @@ async function run() {
             res.json({ result })
         })
 
+        app.get("/my-booking", verifyToken, async (req, res) => {
+
+            const id = new ObjectId(req.user.id);            
+            const date = req.query.date === "desc" ? -1 : 1;
+            const limit = parseInt(req.query.limit) || 5;
+            const page = parseInt(req.query.page) - 1 || 0;
+            const filter = req.query.filter ? [req.query.filter] : ["pending", "canceled", "confirmed", "completed"];
+
+            const pipeline = [
+                { $match: {
+                    userId: id,
+                    status: {$in : filter}
+                } },
+                {
+                    $lookup: {
+                        from: "all cars",
+                        localField: "carId",
+                        foreignField: "_id",
+                        as: "carData"
+                    }
+                },
+                {
+                    $project: {
+                        pickupDate: true,
+                        dropoffDate: true,
+                        status: true,
+                        totalPrice: true,
+                        createdAt: true,
+                        carData: {
+                            model: true,
+                            brand: true,
+                            image: {
+                                $arrayElemAt: [
+                                    {
+                                        $arrayElemAt: [
+                                            "$carData.images", 0
+                                        ]
+                                    }, 0
+                                ]
+                            }
+                        },
+                    }
+                },
+                { $unwind: "$carData" },
+                { $sort: {createdAt: date} }
+            ]
+
+            const cursor1 = allBooking.aggregate([
+                ...pipeline,
+                {$skip: limit * page},
+                {$limit: limit}
+            ])
+
+            const cursor2 = allBooking.aggregate([
+                ...pipeline,
+                {$count: 'totalCount' }
+            ])
+
+            const [result1, result2] = await Promise.all([
+                cursor1.toArray(), 
+                cursor2.toArray()
+            ])
+
+            res.json(
+                {
+                    totalItemCount: result2[0]?.totalCount,
+                    estimatedViewCount: parseInt(req.query.page) * limit,
+                    doc: result1
+                }
+            )
+        })
+
         // POST
         app.post('/user', async (req, res) => {
 
@@ -288,7 +361,7 @@ async function run() {
                 data.carId = new ObjectId(data.carId)
                 data.userId = new ObjectId(req.user.id)
                 data.status = "pending"
-                
+
                 const pickDate = new Date(data.pickupDate);
                 const dropDate = new Date(data.dropoffDate);
 
@@ -351,7 +424,7 @@ async function run() {
                 if (req.user.id === ownerId.toString()) {
                     return res.json({ error: "renting own cars are not allowed !" })
                 }
-                
+
                 data.createdAt = new Date()
                 data.updatedAt = new Date()
 
@@ -371,18 +444,18 @@ async function run() {
         })
 
         // PATCH
-        app.patch("/user", verifyToken, async(req, res) => {
-            
+        app.patch("/user", verifyToken, async (req, res) => {
+
             let user = await allUser.updateOne(
                 { _id: new ObjectId(req.user.id) },
                 {
-                    $set : {
+                    $set: {
                         ...req.body
                     }
                 }
             )
 
-            res.json({user})
+            res.json({ user })
         })
 
         app.patch("/car/:id", verifyToken, async (req, res) => {
