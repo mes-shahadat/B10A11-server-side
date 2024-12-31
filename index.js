@@ -234,17 +234,19 @@ async function run() {
 
         app.get("/my-booking", verifyToken, async (req, res) => {
 
-            const id = new ObjectId(req.user.id);            
+            const id = new ObjectId(req.user.id);
             const date = req.query.date === "desc" ? -1 : 1;
             const limit = parseInt(req.query.limit) || 5;
             const page = parseInt(req.query.page) - 1 || 0;
             const filter = req.query.filter ? [req.query.filter] : ["pending", "canceled", "confirmed", "completed"];
 
             const pipeline = [
-                { $match: {
-                    userId: id,
-                    status: {$in : filter}
-                } },
+                {
+                    $match: {
+                        userId: id,
+                        status: { $in: filter }
+                    }
+                },
                 {
                     $lookup: {
                         from: "all cars",
@@ -263,6 +265,7 @@ async function run() {
                         carData: {
                             model: true,
                             brand: true,
+                            dailyPrice: true,
                             image: {
                                 $arrayElemAt: [
                                     {
@@ -276,22 +279,22 @@ async function run() {
                     }
                 },
                 { $unwind: "$carData" },
-                { $sort: {createdAt: date} }
+                { $sort: { createdAt: date } }
             ]
 
             const cursor1 = allBooking.aggregate([
                 ...pipeline,
-                {$skip: limit * page},
-                {$limit: limit}
+                { $skip: limit * page },
+                { $limit: limit }
             ])
 
             const cursor2 = allBooking.aggregate([
                 ...pipeline,
-                {$count: 'totalCount' }
+                { $count: 'totalCount' }
             ])
 
             const [result1, result2] = await Promise.all([
-                cursor1.toArray(), 
+                cursor1.toArray(),
                 cursor2.toArray()
             ])
 
@@ -362,8 +365,16 @@ async function run() {
                 data.userId = new ObjectId(req.user.id)
                 data.status = "pending"
 
-                const pickDate = new Date(data.pickupDate);
-                const dropDate = new Date(data.dropoffDate);
+                const pick = new Date(data.pickupDate);
+                const drop = new Date(data.dropoffDate);
+
+                const pickDate = new Date(`${pick.getFullYear()}-${pick.getMonth() + 1}-${pick.getDate()}`);
+                const dropDate = new Date(`${drop.getFullYear()}-${drop.getMonth() + 1}-${drop.getDate()}`);
+
+                if (pickDate.toISOString() === dropDate.toISOString()) {
+
+                    return res.json({ error: "hourly rents are not allowed" })
+                }
 
                 data.pickupDate = pickDate
                 data.dropoffDate = dropDate
@@ -389,10 +400,10 @@ async function run() {
                     let curDropDate = new Date(carSchedules[i].dropoffDate)
 
                     if ((pickDate.getTime() <= curDropDate.getTime() && pickDate.getTime() >= curPickDate.getTime())) {
-                        return res.json({ error: `this car is already scheduled on ${data.pickupDate.toDateString()} by someone` })
+                        return res.json({ error: `this car is already scheduled on ${pickDate.toDateString()} by someone` })
                     }
                     else if ((dropDate.getTime() >= curPickDate.getTime() && dropDate.getTime() <= curDropDate.getTime())) {
-                        return res.json({ error: `this car is already scheduled on ${data.dropoffDate.toDateString()} by someone` })
+                        return res.json({ error: `this car is already scheduled on ${dropDate.toDateString()} by someone` })
                     }
                     else if ((curPickDate.getTime() <= dropDate.getTime() && curPickDate.getTime() >= pickDate.getTime())) {
                         return res.json({ error: `picked date range is overlapping with an booked schedule` })
@@ -490,6 +501,197 @@ async function run() {
                 res.json({ error: err.message })
             }
 
+        })
+
+        app.patch("/booking/:id", verifyToken, async (req, res) => {
+
+            const id = new ObjectId(req.params.id);
+            const result = await allBooking.findOne({ _id: id })
+
+            if (result.userId.toString() === req.user.id) {
+
+                if (req.body.status === "canceled") {
+
+                    if (result.status === "pending") {
+
+                        const result = await allBooking.updateOne(
+                            { _id: id },
+                            {
+                                $set: {
+                                    status: "canceled",
+                                    updatedAt: new Date()
+                                }
+                            }
+                        )
+
+                        return res.json(result)
+                    }
+                    else if (result.status !== "canceled") {
+
+                        const date = new Date();
+                        const curDate = new Date(`${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`)
+
+                        if (curDate < result.pickupDate) {
+
+                            const result = await allBooking.updateOne(
+                                { _id: id },
+                                {
+                                    $set: {
+                                        status: "canceled",
+                                        updatedAt: new Date()
+                                    }
+                                }
+                            )
+
+                            return res.json(result)
+                        }
+
+                        return res.json({ message: "cannot cancel confirmed boking after pickup date" })
+                    }
+                }
+                else if (req.body.pickupDate && req.body.dropoffDate) {
+
+                    const pick = new Date(req.body.pickupDate)
+                    const drop = new Date(req.body.dropoffDate)
+
+                    const pickDate = new Date(`${pick.getFullYear()}-${pick.getMonth() + 1}-${pick.getDate()}`);
+                    const dropDate = new Date(`${drop.getFullYear()}-${drop.getMonth() + 1}-${drop.getDate()}`);
+
+                    if (result.status === "pending") {
+
+                        const carSchedules = await allBooking.find(
+                            {
+                                _id: { $ne: id },
+                                carId: result.carId,
+                                status: { $nin: ["canceled", "completed"] }
+                            },
+                            {
+                                projection: {
+                                    _id: false,
+                                    pickupDate: true,
+                                    dropoffDate: true
+                                }
+                            }
+                        ).toArray()
+
+                        // pickup date & dropoff date validation
+                        for (let i = 0; i < carSchedules.length; i++) {
+
+                            let curPickDate = new Date(carSchedules[i].pickupDate)
+                            let curDropDate = new Date(carSchedules[i].dropoffDate)
+
+                            if ((pickDate.getTime() <= curDropDate.getTime() && pickDate.getTime() >= curPickDate.getTime())) {
+                                return res.json({ error: `this car is already scheduled on ${pickDate.toDateString()} by someone` })
+                            }
+                            else if ((dropDate.getTime() >= curPickDate.getTime() && dropDate.getTime() <= curDropDate.getTime())) {
+                                return res.json({ error: `this car is already scheduled on ${dropDate.toDateString()} by someone` })
+                            }
+                            else if ((curPickDate.getTime() <= dropDate.getTime() && curPickDate.getTime() >= pickDate.getTime())) {
+                                return res.json({ error: `picked date range is overlapping with an booked schedule` })
+                            }
+
+                        }
+
+                        const result2 = await allBooking.updateOne(
+                            { _id: id },
+                            {
+                                $set: {
+                                    pickupDate: pickDate,
+                                    dropoffDate: dropDate
+                                }
+                            }
+                        )
+
+                        return res.json(result2)
+                    }
+                }
+                else if (req.body.pickupDate && !req.body.dropoffDate || !req.body.pickupDate && req.body.dropoffDate){
+
+                    return res.json({error: "both pickup date & dropoff date is required"})
+                }
+            }
+            else if (result.ownerId.toString() === req.user.id) {
+
+                if (req.body.status === "canceled") {
+
+                    if (result.status === "pending") {
+
+                        const result = await allBooking.updateOne(
+                            { _id: id },
+                            {
+                                $set: {
+                                    status: "canceled",
+                                    updatedAt: new Date()
+                                }
+                            }
+                        )
+
+                        return res.json(result)
+                    }
+                    else if (result.status === "confirmed") {
+
+                        const date = new Date();
+                        const curDate = new Date(`${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`)
+
+                        if (curDate < result.pickupDate) {
+
+                            const result = await allBooking.updateOne(
+                                { _id: id },
+                                {
+                                    $set: {
+                                        status: "canceled",
+                                        updatedAt: new Date()
+                                    }
+                                }
+                            )
+
+                            return res.json(result)
+                        }
+
+                        return res.json({ message: "cannot cancel confirmed rental after pickup date" })
+                    }
+                }
+                else if (req.body.status === "confirmed") {
+
+                    if (result.status === "pending") {
+
+                        const result = await allBooking.updateOne(
+                            { _id: id },
+                            {
+                                $set: {
+                                    status: "confirmed",
+                                    updatedAt: new Date()
+                                }
+                            }
+                        )
+
+                        return res.json(result)
+                    }
+
+                    return res.json({ message: "status update failed" })
+                }
+                else if (req.body.status === "completed") {
+
+                    if (result.status === "confirmed") {
+
+                        const result = await allBooking.updateOne(
+                            { _id: id },
+                            {
+                                $set: {
+                                    status: "completed",
+                                    updatedAt: new Date()
+                                }
+                            }
+                        )
+
+                        return res.json(result)
+                    }
+
+                    return res.json({ message: "status update failed" })
+                }
+            }
+
+            res.json({ message: "update failed !" })
         })
 
 
