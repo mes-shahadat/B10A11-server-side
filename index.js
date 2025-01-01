@@ -89,7 +89,6 @@ async function run() {
                 res.status(401).json({ error: "user not found" })
             }
 
-
         })
 
         app.get("/my-cars", verifyToken, async (req, res) => {
@@ -204,107 +203,216 @@ async function run() {
 
         app.get('/car/:id', verifyToken, async (req, res) => {
 
-            const id = new ObjectId(req.params.id)
-            const result = await allCar.findOne(
-                { _id: id }
-            )
+            try {
+                const id = new ObjectId(req.params.id)
+                const result = await allCar.findOne(
+                    { _id: id }
+                )
 
-            res.json({ result })
+                res.json({ result })
+            }
+            catch (err) {
+                res.json({ error: err.message })
+            }
         })
 
         app.get("/booking-schedules/:id", verifyToken, async (req, res) => {
 
-            const id = new ObjectId(req.params.id)
-            const result = await allBooking.find(
-                {
-                    carId: id,
-                    status: { $nin: ["canceled", "completed"] }
-                },
-                {
-                    projection: {
-                        _id: false,
-                        pickupDate: true,
-                        dropoffDate: true
+            try {
+                const id = new ObjectId(req.params.id)
+                const result = await allBooking.find(
+                    {
+                        carId: id,
+                        status: { $nin: ["canceled", "completed"] }
+                    },
+                    {
+                        projection: {
+                            _id: false,
+                            pickupDate: true,
+                            dropoffDate: true
+                        }
                     }
-                }
-            ).toArray()
+                ).toArray()
 
-            res.json({ result })
+                res.json({ result })
+            }
+            catch (err) {
+                res.json({ error: err.message })
+            }
         })
 
-        app.get("/my-booking", verifyToken, async (req, res) => {
+        app.get("/my-bookings", verifyToken, async (req, res) => {
 
-            const id = new ObjectId(req.user.id);
-            const date = req.query.date === "desc" ? -1 : 1;
-            const limit = parseInt(req.query.limit) || 5;
-            const page = parseInt(req.query.page) - 1 || 0;
-            const filter = req.query.filter ? [req.query.filter] : ["pending", "canceled", "confirmed", "completed"];
+            try {
+                req.query.page ? null : req.query.page = 1;
 
-            const pipeline = [
-                {
-                    $match: {
-                        userId: id,
-                        status: { $in: filter }
-                    }
-                },
-                {
-                    $lookup: {
-                        from: "all cars",
-                        localField: "carId",
-                        foreignField: "_id",
-                        as: "carData"
-                    }
-                },
-                {
-                    $project: {
-                        pickupDate: true,
-                        dropoffDate: true,
-                        status: true,
-                        totalPrice: true,
-                        createdAt: true,
-                        carData: {
-                            model: true,
-                            brand: true,
-                            dailyPrice: true,
-                            image: {
-                                $arrayElemAt: [
-                                    {
-                                        $arrayElemAt: [
-                                            "$carData.images", 0
-                                        ]
-                                    }, 0
-                                ]
+                const id = new ObjectId(req.user.id);
+                const date = req.query.date === "desc" ? -1 : 1;
+                const limit = parseInt(req.query.limit) || 5;
+                const page = parseInt(req.query.page) - 1 || 0;
+                const filter = req.query.filter ? [req.query.filter] : ["pending", "canceled", "confirmed", "completed"];
+
+                const pipeline = [
+                    {
+                        $match: {
+                            userId: id,
+                            status: { $in: filter }
+                        }
+                    },
+                    {
+                        $lookup: {
+                            from: "all cars",
+                            localField: "carId",
+                            foreignField: "_id",
+                            as: "carData"
+                        }
+                    },
+                    {
+                        $addFields: {
+                            carData: { $arrayElemAt: ["$carData", 0] }
+                        }
+                    },
+                    {
+                        $addFields: {
+                            firstImage: {
+                                $arrayElemAt: ["$carData.images", 0]
                             }
-                        },
+                        }
+                    },
+                    {
+                        $project: {
+                            pickupDate: true,
+                            dropoffDate: true,
+                            status: true,
+                            totalPrice: true,
+                            createdAt: true,
+                            carData: {
+                                model: true,
+                                brand: true,
+                                dailyPrice: true,
+                                image: "$firstImage"
+                            },
+                        }
+                    },
+                    { $sort: { createdAt: date } }
+                ]
+
+                const cursor1 = allBooking.aggregate([
+                    ...pipeline,
+                    { $skip: limit * page },
+                    { $limit: limit }
+                ])
+
+                const cursor2 = allBooking.aggregate([
+                    ...pipeline,
+                    { $count: 'totalCount' }
+                ])
+
+                const [result1, result2] = await Promise.all([
+                    cursor1.toArray(),
+                    cursor2.toArray()
+                ])
+
+                result2.length === 0 ? result2[0] = { totalCount: 0 } : null
+
+                res.json(
+                    {
+                        totalItemCount: result2[0]?.totalCount,
+                        estimatedViewCount: parseInt(req.query.page) * limit,
+                        doc: result1
                     }
-                },
-                { $unwind: "$carData" },
-                { $sort: { createdAt: date } }
-            ]
+                )
+            }
+            catch (err) {
+                res.json({ error: err.message })
+            }
+        })
 
-            const cursor1 = allBooking.aggregate([
-                ...pipeline,
-                { $skip: limit * page },
-                { $limit: limit }
-            ])
+        app.get("/my-rentals", verifyToken, async (req, res) => {
 
-            const cursor2 = allBooking.aggregate([
-                ...pipeline,
-                { $count: 'totalCount' }
-            ])
+            try {
+                req.query.page ? null : req.query.page = 1;
 
-            const [result1, result2] = await Promise.all([
-                cursor1.toArray(),
-                cursor2.toArray()
-            ])
+                const id = new ObjectId(req.user.id);
+                const date = req.query.date === "desc" ? -1 : 1;
+                const limit = parseInt(req.query.limit) || 5;
+                const page = parseInt(req.query.page) - 1 || 0;
+                const filter = req.query.filter ? [req.query.filter] : ["pending", "canceled", "confirmed", "completed"];
 
-            res.json(
-                {
-                    totalItemCount: result2[0]?.totalCount,
-                    estimatedViewCount: parseInt(req.query.page) * limit,
-                    doc: result1
-                }
-            )
+                const pipeline = [
+                    {
+                        $match: {
+                            ownerId: id,
+                            status: { $in: filter }
+                        }
+                    },
+                    {
+                        $lookup: {
+                            from: "all cars",
+                            localField: "carId",
+                            foreignField: "_id",
+                            as: "carData"
+                        }
+                    },
+                    {
+                        $addFields: {
+                            carData: { $arrayElemAt: ["$carData", 0] }
+                        }
+                    },
+                    {
+                        $addFields: {
+                            firstImage: {
+                                $arrayElemAt: ["$carData.images", 0]
+                            }
+                        }
+                    },
+                    {
+                        $project: {
+                            pickupDate: true,
+                            dropoffDate: true,
+                            status: true,
+                            totalPrice: true,
+                            createdAt: true,
+                            carData: {
+                                model: true,
+                                brand: true,
+                                dailyPrice: true,
+                                image: "$firstImage"
+                            },
+                        }
+                    },
+                    { $sort: { createdAt: date } }
+                ]
+
+                const cursor1 = allBooking.aggregate([
+                    ...pipeline,
+                    { $skip: limit * page },
+                    { $limit: limit }
+                ])
+
+                const cursor2 = allBooking.aggregate([
+                    ...pipeline,
+                    { $count: 'totalCount' }
+                ])
+
+                const [result1, result2] = await Promise.all([
+                    cursor1.toArray(),
+                    cursor2.toArray()
+                ])
+
+                result2.length === 0 ? result2[0] = { totalCount: 0 } : null
+
+                res.json(
+                    {
+                        totalItemCount: result2[0]?.totalCount,
+                        estimatedViewCount: parseInt(req.query.page) * limit,
+                        doc: result1
+                    }
+                )
+            }
+            catch (err) {
+                res.json({ error: err.message })
+            }
         })
 
         // POST
@@ -457,16 +565,21 @@ async function run() {
         // PATCH
         app.patch("/user", verifyToken, async (req, res) => {
 
-            let user = await allUser.updateOne(
-                { _id: new ObjectId(req.user.id) },
-                {
-                    $set: {
-                        ...req.body
+            try {
+                let user = await allUser.updateOne(
+                    { _id: new ObjectId(req.user.id) },
+                    {
+                        $set: {
+                            ...req.body
+                        }
                     }
-                }
-            )
+                )
 
-            res.json({ user })
+                res.json({ user })
+            }
+            catch (err) {
+                res.json({ error: err.message })
+            }
         })
 
         app.patch("/car/:id", verifyToken, async (req, res) => {
@@ -481,6 +594,10 @@ async function run() {
                     { projection: { ownerId: true } }
                 )
 
+                if (updatingDoc === null) {
+                    return res.json({ error: "post not found" })
+                }
+
                 if (updatingDoc?.ownerId?.toString() === req.user.id) {
 
                     const result = await allCar.updateOne(
@@ -494,7 +611,7 @@ async function run() {
                     res.json(result)
                 }
                 else {
-                    res.json({ error: "post not found" })
+                    res.json({ error: "not your post" })
                 }
             }
             catch (err) {
@@ -505,33 +622,15 @@ async function run() {
 
         app.patch("/booking/:id", verifyToken, async (req, res) => {
 
-            const id = new ObjectId(req.params.id);
-            const result = await allBooking.findOne({ _id: id })
+            try {
+                const id = new ObjectId(req.params.id);
+                const result = await allBooking.findOne({ _id: id })
 
-            if (result.userId.toString() === req.user.id) {
+                if (result.userId.toString() === req.user.id) {
 
-                if (req.body.status === "canceled") {
+                    if (req.body.status === "canceled") {
 
-                    if (result.status === "pending") {
-
-                        const result = await allBooking.updateOne(
-                            { _id: id },
-                            {
-                                $set: {
-                                    status: "canceled",
-                                    updatedAt: new Date()
-                                }
-                            }
-                        )
-
-                        return res.json(result)
-                    }
-                    else if (result.status !== "canceled") {
-
-                        const date = new Date();
-                        const curDate = new Date(`${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`)
-
-                        if (curDate < result.pickupDate) {
+                        if (result.status === "pending") {
 
                             const result = await allBooking.updateOne(
                                 { _id: id },
@@ -545,95 +644,95 @@ async function run() {
 
                             return res.json(result)
                         }
+                        else if (result.status !== "canceled") {
 
-                        return res.json({ message: "cannot cancel confirmed boking after pickup date" })
-                    }
-                }
-                else if (req.body.pickupDate && req.body.dropoffDate) {
+                            const date = new Date();
+                            const curDate = new Date(`${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`)
 
-                    const pick = new Date(req.body.pickupDate)
-                    const drop = new Date(req.body.dropoffDate)
+                            if (curDate < result.pickupDate) {
 
-                    const pickDate = new Date(`${pick.getFullYear()}-${pick.getMonth() + 1}-${pick.getDate()}`);
-                    const dropDate = new Date(`${drop.getFullYear()}-${drop.getMonth() + 1}-${drop.getDate()}`);
+                                const result = await allBooking.updateOne(
+                                    { _id: id },
+                                    {
+                                        $set: {
+                                            status: "canceled",
+                                            updatedAt: new Date()
+                                        }
+                                    }
+                                )
 
-                    if (result.status === "pending") {
-
-                        const carSchedules = await allBooking.find(
-                            {
-                                _id: { $ne: id },
-                                carId: result.carId,
-                                status: { $nin: ["canceled", "completed"] }
-                            },
-                            {
-                                projection: {
-                                    _id: false,
-                                    pickupDate: true,
-                                    dropoffDate: true
-                                }
-                            }
-                        ).toArray()
-
-                        // pickup date & dropoff date validation
-                        for (let i = 0; i < carSchedules.length; i++) {
-
-                            let curPickDate = new Date(carSchedules[i].pickupDate)
-                            let curDropDate = new Date(carSchedules[i].dropoffDate)
-
-                            if ((pickDate.getTime() <= curDropDate.getTime() && pickDate.getTime() >= curPickDate.getTime())) {
-                                return res.json({ error: `this car is already scheduled on ${pickDate.toDateString()} by someone` })
-                            }
-                            else if ((dropDate.getTime() >= curPickDate.getTime() && dropDate.getTime() <= curDropDate.getTime())) {
-                                return res.json({ error: `this car is already scheduled on ${dropDate.toDateString()} by someone` })
-                            }
-                            else if ((curPickDate.getTime() <= dropDate.getTime() && curPickDate.getTime() >= pickDate.getTime())) {
-                                return res.json({ error: `picked date range is overlapping with an booked schedule` })
+                                return res.json(result)
                             }
 
+                            return res.json({ message: "cannot cancel confirmed boking after pickup date" })
                         }
+                    }
+                    else if (req.body.pickupDate && req.body.dropoffDate) {
 
-                        const result2 = await allBooking.updateOne(
-                            { _id: id },
-                            {
-                                $set: {
-                                    pickupDate: pickDate,
-                                    dropoffDate: dropDate
+                        const pick = new Date(req.body.pickupDate)
+                        const drop = new Date(req.body.dropoffDate)
+
+                        const pickDate = new Date(`${pick.getFullYear()}-${pick.getMonth() + 1}-${pick.getDate()}`);
+                        const dropDate = new Date(`${drop.getFullYear()}-${drop.getMonth() + 1}-${drop.getDate()}`);
+
+                        if (result.status === "pending") {
+
+                            const carSchedules = await allBooking.find(
+                                {
+                                    _id: { $ne: id },
+                                    carId: result.carId,
+                                    status: { $nin: ["canceled", "completed"] }
+                                },
+                                {
+                                    projection: {
+                                        _id: false,
+                                        pickupDate: true,
+                                        dropoffDate: true
+                                    }
                                 }
-                            }
-                        )
+                            ).toArray()
 
-                        return res.json(result2)
+                            // pickup date & dropoff date validation
+                            for (let i = 0; i < carSchedules.length; i++) {
+
+                                let curPickDate = new Date(carSchedules[i].pickupDate)
+                                let curDropDate = new Date(carSchedules[i].dropoffDate)
+
+                                if ((pickDate.getTime() <= curDropDate.getTime() && pickDate.getTime() >= curPickDate.getTime())) {
+                                    return res.json({ error: `this car is already scheduled on ${pickDate.toDateString()} by someone` })
+                                }
+                                else if ((dropDate.getTime() >= curPickDate.getTime() && dropDate.getTime() <= curDropDate.getTime())) {
+                                    return res.json({ error: `this car is already scheduled on ${dropDate.toDateString()} by someone` })
+                                }
+                                else if ((curPickDate.getTime() <= dropDate.getTime() && curPickDate.getTime() >= pickDate.getTime())) {
+                                    return res.json({ error: `picked date range is overlapping with an booked schedule` })
+                                }
+
+                            }
+
+                            const result2 = await allBooking.updateOne(
+                                { _id: id },
+                                {
+                                    $set: {
+                                        pickupDate: pickDate,
+                                        dropoffDate: dropDate
+                                    }
+                                }
+                            )
+
+                            return res.json(result2)
+                        }
+                    }
+                    else if (req.body.pickupDate && !req.body.dropoffDate || !req.body.pickupDate && req.body.dropoffDate) {
+
+                        return res.json({ error: "both pickup date & dropoff date is required" })
                     }
                 }
-                else if (req.body.pickupDate && !req.body.dropoffDate || !req.body.pickupDate && req.body.dropoffDate){
+                else if (result.ownerId.toString() === req.user.id) {
 
-                    return res.json({error: "both pickup date & dropoff date is required"})
-                }
-            }
-            else if (result.ownerId.toString() === req.user.id) {
+                    if (req.body.status === "canceled") {
 
-                if (req.body.status === "canceled") {
-
-                    if (result.status === "pending") {
-
-                        const result = await allBooking.updateOne(
-                            { _id: id },
-                            {
-                                $set: {
-                                    status: "canceled",
-                                    updatedAt: new Date()
-                                }
-                            }
-                        )
-
-                        return res.json(result)
-                    }
-                    else if (result.status === "confirmed") {
-
-                        const date = new Date();
-                        const curDate = new Date(`${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`)
-
-                        if (curDate < result.pickupDate) {
+                        if (result.status === "pending") {
 
                             const result = await allBooking.updateOne(
                                 { _id: id },
@@ -647,51 +746,74 @@ async function run() {
 
                             return res.json(result)
                         }
+                        else if (result.status === "confirmed") {
 
-                        return res.json({ message: "cannot cancel confirmed rental after pickup date" })
-                    }
-                }
-                else if (req.body.status === "confirmed") {
+                            const date = new Date();
+                            const curDate = new Date(`${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`)
 
-                    if (result.status === "pending") {
+                            if (curDate < result.pickupDate) {
 
-                        const result = await allBooking.updateOne(
-                            { _id: id },
-                            {
-                                $set: {
-                                    status: "confirmed",
-                                    updatedAt: new Date()
-                                }
+                                const result = await allBooking.updateOne(
+                                    { _id: id },
+                                    {
+                                        $set: {
+                                            status: "canceled",
+                                            updatedAt: new Date()
+                                        }
+                                    }
+                                )
+
+                                return res.json(result)
                             }
-                        )
 
-                        return res.json(result)
+                            return res.json({ message: "cannot cancel confirmed rental after pickup date" })
+                        }
                     }
+                    else if (req.body.status === "confirmed") {
 
-                    return res.json({ message: "status update failed" })
-                }
-                else if (req.body.status === "completed") {
+                        if (result.status === "pending") {
 
-                    if (result.status === "confirmed") {
-
-                        const result = await allBooking.updateOne(
-                            { _id: id },
-                            {
-                                $set: {
-                                    status: "completed",
-                                    updatedAt: new Date()
+                            const result = await allBooking.updateOne(
+                                { _id: id },
+                                {
+                                    $set: {
+                                        status: "confirmed",
+                                        updatedAt: new Date()
+                                    }
                                 }
-                            }
-                        )
+                            )
 
-                        return res.json(result)
+                            return res.json(result)
+                        }
+
+                        return res.json({ message: "status update failed" })
                     }
+                    else if (req.body.status === "completed") {
 
-                    return res.json({ message: "status update failed" })
+                        if (result.status === "confirmed") {
+
+                            const result = await allBooking.updateOne(
+                                { _id: id },
+                                {
+                                    $set: {
+                                        status: "completed",
+                                        updatedAt: new Date()
+                                    }
+                                }
+                            )
+
+                            return res.json(result)
+                        }
+
+                        return res.json({ message: "status update failed" })
+                    }
                 }
+
+                res.json({ message: "update failed !" })
             }
-
-            res.json({ message: "update failed !" })
+            catch (err) {
+                res.json({ error: err.message })
+            }
         })
 
 
@@ -711,14 +833,31 @@ async function run() {
                     { projection: { ownerId: true } }
                 )
 
+                if (deletingDoc === null) {
+                    return res.json({ error: "post not found" })
+                }
+
                 if (deletingDoc?.ownerId.toString() === req.user.id) {
+
+                    allBooking.updateMany(
+                        {
+                            carId: id,
+                            status: "pending"
+                        },
+                        {
+                            $set: {
+                                status: "canceled",
+                                updatedAt: new Date()
+                            }
+                        }
+                    )
 
                     const result = await allCar.deleteOne({ _id: id })
 
                     res.json(result);
                 }
                 else {
-                    res.json({ error: "post not found" })
+                    res.json({ error: "not your post" })
                 }
             }
             catch (err) {
