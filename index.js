@@ -459,6 +459,23 @@ async function run() {
             }
         })
 
+        app.get("/special-offer/:id", async (req, res) => {
+
+            try {
+                const id = new ObjectId(req.params.id);
+                const result = await allOffer.findOne({ _id: id })
+
+                if (result === null) {
+                    return res.json({ error: "offer not found !" })
+                }
+
+                res.json(result)
+            }
+            catch (err) {
+                res.json({ error: err.message })
+            }
+        })
+
         // POST
         app.post('/user', async (req, res) => {
 
@@ -714,6 +731,9 @@ async function run() {
 
                 if (exists === null) {
 
+                    data.createdAt = new Date()
+                    data.updatedAt = new Date()
+
                     const result = await allOffer.insertOne(data)
 
                     await allCar.updateOne(
@@ -888,7 +908,8 @@ async function run() {
                                 {
                                     $set: {
                                         pickupDate: pickDate,
-                                        dropoffDate: dropDate
+                                        dropoffDate: dropDate,
+                                        updatedAt: new Date()
                                     }
                                 }
                             )
@@ -1030,7 +1051,8 @@ async function run() {
                             { _id: id },
                             {
                                 $set: {
-                                    ...req.body
+                                    ...req.body,
+                                    updatedAt: new Date()
                                 }
                             }
                         )
