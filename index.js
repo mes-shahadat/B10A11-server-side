@@ -476,6 +476,53 @@ async function run() {
             }
         })
 
+        app.get("/special-offers", async (req, res) => {
+
+            const limit = parseInt(req.query.limit) || 50;
+            const result = await allOffer.aggregate(
+                [
+                    {
+                        $lookup: {
+                            from: "all cars",
+                            localField: "discountedCarId",
+                            foreignField: "_id",
+                            as: "carData"
+                        }
+                    },
+                    {
+                        $addFields: {
+                            carData: { $arrayElemAt: ["$carData", 0] }
+                        }
+                    },
+                    {
+                        $match: { "carData.availability": true }
+                    },
+                    {
+                        $addFields: {
+                            carImage: {
+                                $arrayElemAt: ["$carData.images", 0]
+                            }
+                        }
+                    },
+                    {
+                        $project: {
+                            carData: false
+                        }
+                    }
+                ]
+            )
+                .limit(limit)
+                .sort(
+                    {
+                        validUntil: 1,
+                        discountPercentage: -1
+                    }
+                )
+                .toArray()
+
+            res.json(result)
+        })
+
         // POST
         app.post('/user', async (req, res) => {
 
@@ -601,7 +648,7 @@ async function run() {
                 )
 
                 if (bookCar === null) {
-                    return res.json({ error: "car doesn't exists !" })
+                    return res.json({ error: "car not found !" })
                 }
 
                 data.ownerId = new ObjectId(bookCar.ownerId)
@@ -660,7 +707,7 @@ async function run() {
                                 }
                             }
                             else {
-                                return res.json({ error: "offer expired" })
+                                return res.json({ error: "offer expired, plz resubmit" })
                             }
                         }
                         else {
@@ -669,7 +716,7 @@ async function run() {
 
                     }
                     else {
-                        return res.json({ error: "offer expired !" })
+                        return res.json({ error: "offer expired, plz resubmit !" })
                     }
                 }
 
@@ -819,13 +866,27 @@ async function run() {
                 const id = new ObjectId(req.params.id);
                 const result = await allBooking.findOne({ _id: id })
 
+                const car = await allCar.findOne(
+                    { _id: result.carId },
+                    {
+                        projection: {
+                            discountId: true,
+                            dailyPrice: true
+                        }
+                    }
+                )
+
+                if (car === null) {
+                    return res.json({ error: "car not found !" })
+                }
+
                 if (result.userId.toString() === req.user.id) {
 
                     if (req.body.status === "canceled") {
 
                         if (result.status === "pending") {
 
-                            const result = await allBooking.updateOne(
+                            const bookingResult = await allBooking.updateOne(
                                 { _id: id },
                                 {
                                     $set: {
@@ -835,7 +896,12 @@ async function run() {
                                 }
                             )
 
-                            return res.json(result)
+                            allCar.updateOne(
+                                { _id: result.carId },
+                                { $inc: { bookingCount: -1 } }
+                            )
+
+                            return res.json(bookingResult)
                         }
                         else if (result.status !== "canceled") {
 
@@ -844,7 +910,7 @@ async function run() {
 
                             if (curDate < result.pickupDate) {
 
-                                const result = await allBooking.updateOne(
+                                const bookingResult = await allBooking.updateOne(
                                     { _id: id },
                                     {
                                         $set: {
@@ -854,7 +920,15 @@ async function run() {
                                     }
                                 )
 
-                                return res.json(result)
+                                allCar.updateOne(
+                                    { _id: result.carId },
+                                    {
+                                        $inc: { bookingCount: -1 },
+                                        $set: { availability: true }
+                                    }
+                                )
+
+                                return res.json(bookingResult)
                             }
 
                             return res.json({ message: "cannot cancel confirmed boking after pickup date" })
@@ -867,6 +941,15 @@ async function run() {
 
                         const pickDate = new Date(`${pick.getFullYear()}-${pick.getMonth() + 1}-${pick.getDate()}`);
                         const dropDate = new Date(`${drop.getFullYear()}-${drop.getMonth() + 1}-${drop.getDate()}`);
+
+                        if (req.body.pickupDate && !req.body.dropoffDate || !req.body.pickupDate && req.body.dropoffDate) {
+
+                            return res.json({ error: "both pickup date & dropoff date is required" })
+                        }
+
+                        if (pickDate.toISOString() === result.pickupDate.toISOString() && dropDate.toISOString() === result.dropoffDate.toISOString()) {
+                            return res.json({ error: "plz submit new dates" })
+                        }
 
                         if (result.status === "pending") {
 
@@ -903,12 +986,89 @@ async function run() {
 
                             }
 
+                            const oneDay = 24 * 60 * 60 * 1000;
+                            const diffDays = Math.round(Math.abs((pickDate - dropDate) / oneDay));
+
+                            let discount = 0;
+                            let totalPrice = 0;
+
+                            if (car.discountId) {
+
+                                const offerExists = await allOffer.findOne(
+                                    { _id: car.discountId },
+                                    {
+                                        projection: {
+                                            discountedCarId: true,
+                                            discountPercentage: true,
+                                            validUntil: true,
+                                            minRentalDays: true,
+                                            maxRentalDays: true
+                                        }
+                                    }
+                                )
+
+                                if (offerExists) {
+
+                                    const { discountedCarId, discountPercentage, validUntil, minRentalDays, maxRentalDays } = offerExists;
+
+                                    if (discountedCarId.toString() === result.carId.toString()) {
+
+                                        if (Date.now() <= validUntil) {
+
+                                            if (minRentalDays && maxRentalDays) {
+
+                                                if (diffDays >= minRentalDays && diffDays <= maxRentalDays) {
+                                                    discount = discountPercentage
+                                                }
+                                            }
+                                            else if (!minRentalDays && maxRentalDays) {
+
+                                                if (diffDays <= maxRentalDays) {
+                                                    discount = discountPercentage
+                                                }
+                                            }
+                                            else if (minRentalDays && !maxRentalDays) {
+
+                                                if (diffDays >= minRentalDays) {
+                                                    discount = discountPercentage
+                                                }
+                                            }
+                                            else {
+
+                                                discount = discountPercentage
+                                            }
+                                        }
+                                        else {
+                                            return res.json({ error: "offer expired, plz resubmit" })
+                                        }
+                                    }
+                                    else {
+                                        return res.json({ error: "how is this possible" })
+                                    }
+
+                                }
+                                else {
+                                    return res.json({ error: "offer expired, plz resubmit !" })
+                                }
+                            }
+
+                            if (discount) {
+
+                                let discountedPrice = car.dailyPrice * (discount / 100);
+                                let discountedDaily = car.dailyPrice - discountedPrice.toFixed(2)
+                                totalPrice = Math.round(discountedDaily * diffDays)
+                            }
+                            else {
+                                totalPrice = car.dailyPrice * diffDays;
+                            }
+
                             const result2 = await allBooking.updateOne(
                                 { _id: id },
                                 {
                                     $set: {
                                         pickupDate: pickDate,
                                         dropoffDate: dropDate,
+                                        totalPrice: totalPrice,
                                         updatedAt: new Date()
                                     }
                                 }
@@ -917,10 +1077,7 @@ async function run() {
                             return res.json(result2)
                         }
                     }
-                    else if (req.body.pickupDate && !req.body.dropoffDate || !req.body.pickupDate && req.body.dropoffDate) {
 
-                        return res.json({ error: "both pickup date & dropoff date is required" })
-                    }
                 }
                 else if (result.ownerId.toString() === req.user.id) {
 
@@ -928,7 +1085,7 @@ async function run() {
 
                         if (result.status === "pending") {
 
-                            const result = await allBooking.updateOne(
+                            const bookingResult = await allBooking.updateOne(
                                 { _id: id },
                                 {
                                     $set: {
@@ -938,7 +1095,12 @@ async function run() {
                                 }
                             )
 
-                            return res.json(result)
+                            allCar.updateOne(
+                                { _id: result.carId },
+                                { $inc: { bookingCount: -1 } }
+                            )
+
+                            return res.json(bookingResult)
                         }
                         else if (result.status === "confirmed") {
 
@@ -947,7 +1109,7 @@ async function run() {
 
                             if (curDate < result.pickupDate) {
 
-                                const result = await allBooking.updateOne(
+                                const bookingResult = await allBooking.updateOne(
                                     { _id: id },
                                     {
                                         $set: {
@@ -957,7 +1119,15 @@ async function run() {
                                     }
                                 )
 
-                                return res.json(result)
+                                allCar.updateOne(
+                                    { _id: result.carId },
+                                    {
+                                        $inc: { bookingCount: -1 },
+                                        $set: { availability: true }
+                                    }
+                                )
+
+                                return res.json(bookingResult)
                             }
 
                             return res.json({ message: "cannot cancel confirmed rental after pickup date" })
@@ -967,7 +1137,7 @@ async function run() {
 
                         if (result.status === "pending") {
 
-                            const result = await allBooking.updateOne(
+                            const bookingResult = await allBooking.updateOne(
                                 { _id: id },
                                 {
                                     $set: {
@@ -977,7 +1147,14 @@ async function run() {
                                 }
                             )
 
-                            return res.json(result)
+                            await allCar.updateOne(
+                                { _id: result.carId },
+                                {
+                                    $set: { availability: false }
+                                }
+                            )
+
+                            return res.json(bookingResult)
                         }
 
                         return res.json({ message: "status update failed" })
@@ -986,7 +1163,7 @@ async function run() {
 
                         if (result.status === "confirmed") {
 
-                            const result = await allBooking.updateOne(
+                            const bookingResult = await allBooking.updateOne(
                                 { _id: id },
                                 {
                                     $set: {
@@ -996,7 +1173,13 @@ async function run() {
                                 }
                             )
 
-                            return res.json(result)
+                            await allCar.updateOne(
+                                { _id: result.carId },
+                                {
+                                    $set: { availability: true }
+                                }
+                            )
+                            return res.json(bookingResult)
                         }
 
                         return res.json({ message: "status update failed" })
