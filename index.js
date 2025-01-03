@@ -523,6 +523,36 @@ async function run() {
             res.json(result)
         })
 
+        app.get("/recent-listings", async (req, res) => {
+
+            const limit = parseInt(req.query.limit) || 50;
+            const result = await allCar.find(
+                { discountId: { $exists: false } },
+                {
+                    projection: {
+                        model: true,
+                        brand: true,
+                        registrationNumber: true,
+                        dailyPrice: true,
+                        availability: true,
+                        bookingCount: true,
+                        image: { $arrayElemAt: ["$images", 0] },
+                        createdAt: true
+                    }
+                }
+            )
+                .limit(limit)
+                .sort(
+                    {
+                        createdAt: 1,
+                        bookingCount: -1
+                    }
+                )
+                .toArray()
+
+            res.json(result)
+        })
+
         // POST
         app.post('/user', async (req, res) => {
 
@@ -1303,12 +1333,12 @@ async function run() {
                     )
 
                     const result = await allCar.deleteOne({ _id: id })
-                    await allOffer.deleteOne({ discountedCarId: id })
+                    allOffer.deleteOne({ discountedCarId: id })
 
                     res.json(result);
                 }
                 else {
-                    res.json({ error: "not your booking" })
+                    res.json({ error: "not your car !" })
                 }
             }
             catch (err) {
