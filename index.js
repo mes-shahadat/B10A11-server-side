@@ -768,7 +768,7 @@ async function run() {
                 )
 
                 if (updatingDoc === null) {
-                    return res.json({ error: "post not found" })
+                    return res.json({ error: "car not found" })
                 }
 
                 if (updatingDoc?.ownerId?.toString() === req.user.id) {
@@ -784,7 +784,7 @@ async function run() {
                     res.json(result)
                 }
                 else {
-                    res.json({ error: "not your post" })
+                    res.json({ error: "not your car" })
                 }
             }
             catch (err) {
@@ -1079,7 +1079,7 @@ async function run() {
                 )
 
                 if (deletingDoc === null) {
-                    return res.json({ error: "post not found" })
+                    return res.json({ error: "car not found" })
                 }
 
                 if (deletingDoc?.ownerId.toString() === req.user.id) {
@@ -1103,13 +1103,39 @@ async function run() {
                     res.json(result);
                 }
                 else {
-                    res.json({ error: "not your post" })
+                    res.json({ error: "not your booking" })
                 }
             }
             catch (err) {
                 res.json({ error: err.message })
             }
 
+        })
+
+        app.delete("/special-offer/:id", verifyToken, async (req, res) => {
+
+            try {
+                const id = new ObjectId(req.params.id);
+
+                const offer = await allOffer.findOne({ _id: id });
+
+                if (offer === null) {
+                    return res.json({ error: "offer doesn't exist" })
+                }
+
+                if (offer.ownerId.toString() !== req.user.id) {
+                    return res.json({ error: "can't delete someone else offer" })
+                }
+
+                const result = await allOffer.deleteOne(
+                    { _id: id }
+                )
+
+                res.json(result)
+            }
+            catch (err) {
+                res.json({ error: err.message })
+            }
         })
 
     } finally {
