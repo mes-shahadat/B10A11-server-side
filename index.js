@@ -85,7 +85,7 @@ async function run() {
             console.log('Watching for TTL deletions...');
 
             changeStream.on('change', async (change) => {
-                
+
                 await allCar.updateOne(
                     { discountId: change.documentKey._id },
                     {
@@ -685,12 +685,16 @@ async function run() {
 
         })
 
-        app.post("/special-offers", verifyToken, async (req, res) => {
+        app.post("/special-offer", verifyToken, async (req, res) => {
 
             const data = req.body;
             data.ownerId = new ObjectId(req.user.id)
             data.discountedCarId = new ObjectId(data.discountedCarId)
             data.validUntil = new Date(data.validUntil)
+
+            if (data.discountPercentage === undefined) {
+                return res.json({ error: "discount percentage is required !" })
+            }
 
             const discountedCar = await allCar.findOne({
                 _id: data.discountedCarId
@@ -982,6 +986,78 @@ async function run() {
             }
             catch (err) {
                 res.json({ error: err.message })
+            }
+        })
+
+        app.patch("/special-offer/:id", verifyToken, async (req, res) => {
+
+            try {
+
+                const id = new ObjectId(req.params.id)
+                delete req.body.discountedCarId
+                delete req.body.ownerId
+
+                const offer = await allOffer.findOne(
+                    { _id: id },
+                    {
+                        projection: {
+                            discountedCarId: true,
+                            ownerId: true
+                        }
+                    }
+                )
+
+                if (offer === null) {
+
+                    return res.json({ error: "offer doesn't exist" })
+                }
+
+                if (offer.ownerId.toString() === req.user.id) {
+
+                    const car = await allCar.findOne(
+                        { _id: offer.discountedCarId },
+                        { projection: { ownerId: true } }
+                    )
+
+                    if (car === null) {
+
+                        return res.json({ error: "car doesn't exist" })
+                    }
+
+                    if (car.ownerId.toString() === req.user.id) {
+
+                        const offerUpdates = await allOffer.updateOne(
+                            { _id: id },
+                            {
+                                $set: {
+                                    ...req.body
+                                }
+                            }
+                        )
+
+                        if (req.body.discountPercentage) {
+
+                            allCar.updateOne(
+                                { _id: offer.discountedCarId },
+                                {
+                                    $set: {
+                                        discount: parseInt(req.body.discountPercentage)
+                                    }
+                                }
+                            )
+
+                        }
+
+                        return res.json(offerUpdates)
+                    }
+
+                    return res.json({ error: "can't update offer of someone else's car" })
+                }
+
+                res.json({ error: "cannot update someone else post" })
+            }
+            catch (err) {
+                return res.json({ error: err.message })
             }
         })
 
