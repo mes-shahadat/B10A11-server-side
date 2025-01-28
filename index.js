@@ -7,7 +7,16 @@ require('dotenv').config()
 const app = express()
 const port = process.env.PORT || 5000;
 
-app.use(cors())
+app.use(cors({
+    // remove trailing slash (i.e. from the end)
+    origin: [
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "https://vroom-rents.web.app",
+        "https://vroom-rents.firebaseapp.com"
+    ],
+    credentials: true // without this browsers blocks cookies from crossorigin server
+}))
 app.use(cookieParser())
 app.use(express.json())
 
@@ -21,7 +30,11 @@ const verifyToken = (req, res, next) => {
 
             if (err) {
 
-                res.clearCookie("token")
+                res.clearCookie("token", {
+                    httpOnly: true,
+                    secure: true,
+                    sameSite: 'none'
+                })
                 res.status(401).json({ error: "token is invalid" })
             }
             else {
@@ -58,48 +71,48 @@ async function run() {
         const allBooking = database.collection("all bookings");
         const allOffer = database.collection("all offers");
 
-        try {
-            const indexes = await allOffer.indexes();
-            const ttlIndex = indexes.find(
-                index => index.key.validUntil === 1 && index.expireAfterSeconds === 0
-            );
+        // try {
+        //     const indexes = await allOffer.indexes();
+        //     const ttlIndex = indexes.find(
+        //         index => index.key.validUntil === 1 && index.expireAfterSeconds === 0
+        //     );
 
-            if (!ttlIndex) {
+        //     if (!ttlIndex) {
 
-                console.log("Creating TTL index...");
-                await allOffer.createIndex({ validUntil: 1 }, { expireAfterSeconds: 0 });
-            } else {
-                console.log("TTL index already exists");
-            }
-        }
-        catch (err) { console.log(err.message) }
+        //         console.log("Creating TTL index...");
+        //         await allOffer.createIndex({ validUntil: 1 }, { expireAfterSeconds: 0 });
+        //     } else {
+        //         console.log("TTL index already exists");
+        //     }
+        // }
+        // catch (err) { console.log(err.message) }
 
-        try {
+        // try {
 
-            const changeStream = allOffer.watch(
-                [
-                    { $match: { operationType: 'delete' } }
-                ]
-            );
+        //     const changeStream = allOffer.watch(
+        //         [
+        //             { $match: { operationType: 'delete' } }
+        //         ]
+        //     );
 
-            console.log('Watching for TTL deletions...');
+        //     console.log('Watching for TTL deletions...');
 
-            changeStream.on('change', async (change) => {
+        //     changeStream.on('change', async (change) => {
 
-                await allCar.updateOne(
-                    { discountId: change.documentKey._id },
-                    {
-                        $unset: {
-                            discountId: 1,
-                            discount: 1
-                        }
-                    }
-                )
-            });
+        //         await allCar.updateOne(
+        //             { discountId: change.documentKey._id },
+        //             {
+        //                 $unset: {
+        //                     discountId: 1,
+        //                     discount: 1
+        //                 }
+        //             }
+        //         )
+        //     });
 
-        } catch (err) {
-            console.error('Error:', err.message);
-        }
+        // } catch (err) {
+        //     console.error('Error:', err.message);
+        // }
 
         // GET
         app.get('/', (req, res) => {
@@ -109,25 +122,40 @@ async function run() {
 
         app.get('/user/:email', async (req, res) => {
 
-            const email = req.params.email.split("&")[0];
-            const password = req.params.email.split("&")[1];
+            const email = req.params.email;
 
             const result = await allUser.findOne({ email: email });
 
-            result.password === undefined ? result.password = "🔒" : null
-
-            if (result && password === result.password) {
+            if (result) {
 
                 const token = jwt.sign({ id: result?._id, email: result?.email }, jwtSecret);
 
                 res.cookie("token", token, {
-                    httpOnly: true
+                    httpOnly: true,
+                    secure: true,
+                    sameSite: 'none'
                 })
+
+                res.cookie("role", result.role, {
+                    secure: true,
+                    sameSite: 'none'
+                })
+
+                if (result.location) {
+                    res.cookie("location", result.location, {
+                        secure: true,
+                        sameSite: 'none'
+                    })
+                }
 
                 res.json({ message: "user found" })
             }
             else {
-                res.clearCookie("token")
+                res.clearCookie("token", {
+                    httpOnly: true,
+                    secure: true,
+                    sameSite: 'none'
+                })
                 res.status(401).json({ error: "user not found" })
             }
 
@@ -142,27 +170,51 @@ async function run() {
                 const limit = parseInt(req.query.limit) || 5;
                 const page = parseInt(req.query.page) - 1 || 0;
 
-                const cursor = allCar.find(
-                    {
-                        ownerId: new ObjectId(req.user.id)
-                    }
-                )
-                    .sort(
-                        {
-                            dailyPrice: price,
-                            createdAt: date
-                        }
-                    )
-                    .limit(limit)
-                    .skip(limit * page)
-                    .project(
-                        {
-                            ownerId: false,
-                            bookingCount: false,
-                            updatedAt: false
-                        }
-                    )
+                const highlight = {}
 
+                if (req.query.date !== undefined) {
+                    highlight.createdAt = date
+                    highlight._id = 1
+                }
+                else if (req.query.price !== undefined) {
+                    highlight.dailyPrice = price
+                    highlight._id = 1
+                }
+                else {
+                    highlight.title = 1
+                    highlight._id = 1
+                }
+
+                const cursor = allCar.aggregate(
+                    [
+                        {
+                            $match: { ownerId: new ObjectId(req.user.id) }
+                        },
+                        {
+                            $lookup: {
+                                from: "all offers",
+                                localField: "_id",
+                                foreignField: "discountedCarId",
+                                as: "discountDetails"
+                            }
+                        },
+                        {
+                            $addFields: {
+                                offerData: { $arrayElemAt: ["$discountDetails", 0] }
+                            }
+                        },
+                        { $sort: highlight },
+                        { $skip: limit * page },
+                        { $limit: limit },
+                        {
+                            $project: {
+                                ownerId: false,
+                                discountDetails: false,
+                                updatedAt: false
+                            }
+                        },
+                    ]
+                )
 
                 const cursor2 = allCar.countDocuments(
                     {
@@ -196,6 +248,7 @@ async function run() {
                 const model = req.query.model
                 const brand = req.query.brand
                 const location = req.query.location
+                const dealer = req.query.dealer
                 const obj = {};
 
                 if (model) {
@@ -207,26 +260,65 @@ async function run() {
                 else if (location) {
                     obj.location = { $regex: req.query.location, $options: "i" }
                 }
+                else if (dealer) {
+                    obj.ownerId = new ObjectId(req.query.dealer)
+                }
                 else {
                     obj.availability = true;
                 }
 
-                const cursor = allCar.find(obj)
-                    .sort(
-                        {
-                            dailyPrice: price,
-                            createdAt: date
-                        }
-                    )
-                    .limit(limit)
-                    .skip(limit * page)
-                    .project(
-                        {
-                            ownerId: false,
-                            updatedAt: false
-                        }
-                    )
+                const highlight = {}
 
+                if (req.query.date !== undefined) {
+                    highlight.createdAt = date
+                    highlight._id = 1
+                }
+                else if (req.query.price !== undefined) {
+                    highlight.dailyPrice = price
+                    highlight._id = 1
+                }
+                else {
+                    highlight.brand = 1
+                    highlight._id = 1
+                }
+
+                const cursor = allCar.aggregate(
+                    [
+                        {
+                            $match: obj
+                        },
+                        {
+                            $lookup: {
+                                from: "all offers",
+                                localField: "_id",
+                                foreignField: "discountedCarId",
+                                as: "discountDetails"
+                            }
+                        },
+                        {
+                            $addFields: {
+                                offerData: { $arrayElemAt: ["$discountDetails", 0] }
+                            }
+                        },
+                        {
+                            $addFields: {
+                                discount: "$offerData.discountPercentage"
+                            }
+                        },
+                        { $sort: highlight },
+                        { $skip: limit * page },
+                        { $limit: limit },
+                        {
+                            $project: {
+                                ownerId: false,
+                                updatedAt: false,
+                                discountDetails: false,
+                                "offerData.ownerId": false,
+                                "offerData.discountedCarId": false
+                            }
+                        },
+                    ]
+                )
 
                 const cursor2 = allCar.countDocuments(obj)
 
@@ -249,11 +341,55 @@ async function run() {
 
             try {
                 const id = new ObjectId(req.params.id)
-                const result = await allCar.findOne(
-                    { _id: id }
-                )
 
-                res.json({ result })
+                const result = await allCar.aggregate(
+                    [
+                        {
+                            $match: { _id: id }
+                        },
+                        {
+                            $lookup: {
+                                from: "all users",
+                                localField: "ownerId",
+                                foreignField: "_id",
+                                as: "ownerDetails"
+                            }
+                        },
+                        {
+                            $addFields: {
+                                ownerData: { $arrayElemAt: ["$ownerDetails", 0] }
+                            }
+                        },
+                        {
+                            $lookup: {
+                                from: "all offers",
+                                localField: "_id",
+                                foreignField: "discountedCarId",
+                                as: "discountDetails"
+                            }
+                        },
+                        {
+                            $addFields: {
+                                offerData: { $arrayElemAt: ["$discountDetails", 0] }
+                            }
+                        },
+                        {
+                            $project: {
+                                ownerId: false,
+                                ownerDetails: false,
+                                "ownerData.password": false,
+                                "ownerData.role": false,
+                                discountDetails: false,
+                            }
+                        },
+                    ]
+                ).toArray()
+
+                if (result.length > 0) {
+                    res.json(result[0])
+                } else {
+                    res.json(result)
+                }
             }
             catch (err) {
                 res.json({ error: err.message })
@@ -278,7 +414,7 @@ async function run() {
                     }
                 ).toArray()
 
-                res.json({ result })
+                res.json(result)
             }
             catch (err) {
                 res.json({ error: err.message })
@@ -327,8 +463,11 @@ async function run() {
                         $project: {
                             pickupDate: true,
                             dropoffDate: true,
+                            pickupLocation: true,
+                            dropOffLocation: true,
                             status: true,
                             totalPrice: true,
+                            phone: true,
                             createdAt: true,
                             carData: {
                                 model: true,
@@ -411,12 +550,36 @@ async function run() {
                         }
                     },
                     {
+                        $lookup: {
+                            from: "all users",
+                            localField: "userId",
+                            foreignField: "_id",
+                            as: "userData"
+                        }
+                    },
+                    {
+                        $addFields: {
+                            userData: { $arrayElemAt: ["$userData", 0] }
+                        }
+                    },
+                    {
                         $project: {
                             pickupDate: true,
                             dropoffDate: true,
+                            pickupLocation: true,
+                            dropOffLocation: true,
                             status: true,
                             totalPrice: true,
+                            phone: true,
                             createdAt: true,
+                            userData: {
+                                _id: true,
+                                name: true,
+                                email: true,
+                                image: true,
+                                lastLoginAt: true,
+                                role: true,
+                            },
                             carData: {
                                 model: true,
                                 brand: true,
@@ -527,7 +690,7 @@ async function run() {
 
             const limit = parseInt(req.query.limit) || 50;
             const result = await allCar.find(
-                { discountId: { $exists: false } },
+                { availability: true },
                 {
                     projection: {
                         model: true,
@@ -559,9 +722,25 @@ async function run() {
             const doc = req.body;
             let insertResult = { message: "user found" };
 
+            if (!req.body.email) {
+                return res.json({ error: "email is required !" })
+            }
+
+            if (doc.lastLoginAt) {
+                doc.lastLoginAt = new Date(parseInt(doc.lastLoginAt))
+            }
+
+            if (!doc.role) {
+                doc.role = "customer"
+            }
+
             let user = await allUser.findOne(
                 { email: { $regex: req.body.email, $options: "i" } }
             )
+
+            if (user) {
+                doc.role = user.role
+            }
 
             if (!user) {
                 const result = await allUser.insertOne(doc);
@@ -569,7 +748,7 @@ async function run() {
                 insertResult = result
             }
             else if (!doc.login) {
-                return res.json({ error: "email already exists !" })
+                return res.json({ error: "email already exists in database !" })
             }
 
             if (doc.login) {
@@ -577,8 +756,22 @@ async function run() {
                 const token = jwt.sign({ id: user?._id, email: user?.email }, jwtSecret);
 
                 res.cookie("token", token, {
-                    httpOnly: true
+                    httpOnly: true,
+                    secure: true,
+                    sameSite: 'none' // set secure : true
                 })
+
+                res.cookie("role", doc.role, {
+                    secure: true,
+                    sameSite: 'none'
+                })
+
+                if (user.location) {
+                    res.cookie("location", user.location, {
+                        secure: true,
+                        sameSite: 'none'
+                    })
+                }
 
             }
 
@@ -590,6 +783,7 @@ async function run() {
             try {
                 const doc = req.body
                 doc.ownerId = new ObjectId(req.user.id);
+                doc.bookingCount = 0
                 doc.createdAt = new Date()
                 doc.updatedAt = new Date()
 
@@ -664,18 +858,33 @@ async function run() {
                 const oneDay = 24 * 60 * 60 * 1000;
                 const diffDays = Math.round(Math.abs((pickDate - dropDate) / oneDay));
 
-                const bookCar = await allCar.findOne(
-                    { _id: data.carId },
-                    {
-                        projection: {
-                            _id: false,
-                            dailyPrice: true,
-                            ownerId: true,
-                            discountId: true,
-                            discount: true
-                        }
-                    }
-                )
+                const [bookCar] = await allCar.aggregate(
+                    [
+                        {
+                            $match: { _id: data.carId }
+                        },
+                        {
+                            $lookup: {
+                                from: "all offers",
+                                localField: "_id",
+                                foreignField: "discountedCarId",
+                                as: "discountDetails"
+                            }
+                        },
+                        {
+                            $addFields: {
+                                offerData: { $arrayElemAt: ["$discountDetails", 0] }
+                            }
+                        },
+                        {
+                            $project: {
+                                ownerId: true,
+                                dailyPrice: true,
+                                offerData: true
+                            }
+                        },
+                    ]
+                ).toArray()
 
                 if (bookCar === null) {
                     return res.json({ error: "car not found !" })
@@ -690,64 +899,46 @@ async function run() {
 
                 let discount = 0;
 
-                if (bookCar.discountId) {
+                if (bookCar.offerData) {
 
-                    const result = await allOffer.findOne(
-                        { _id: bookCar.discountId },
-                        {
-                            projection: {
-                                discountedCarId: true,
-                                discountPercentage: true,
-                                validUntil: true,
-                                minRentalDays: true,
-                                maxRentalDays: true
+                    const { discountedCarId, discountPercentage, validUntil, minRentalDays, maxRentalDays } = bookCar.offerData;
+
+                    if (discountedCarId.toString() === data.carId.toString()) {
+
+                        if (Date.now() <= new Date(validUntil)) {
+
+                            if (minRentalDays && maxRentalDays) {
+
+                                if (diffDays >= minRentalDays && diffDays <= maxRentalDays) {
+                                    discount = discountPercentage
+                                }
                             }
-                        }
-                    )
+                            else if (!minRentalDays && maxRentalDays) {
 
-                    if (result) {
-
-                        const { discountedCarId, discountPercentage, validUntil, minRentalDays, maxRentalDays } = result;
-
-                        if (discountedCarId.toString() === data.carId.toString()) {
-
-                            if (Date.now() <= validUntil) {
-
-                                if (minRentalDays && maxRentalDays) {
-
-                                    if (diffDays >= minRentalDays && diffDays <= maxRentalDays) {
-                                        discount = discountPercentage
-                                    }
+                                if (diffDays <= maxRentalDays) {
+                                    discount = discountPercentage
                                 }
-                                else if (!minRentalDays && maxRentalDays) {
+                            }
+                            else if (minRentalDays && !maxRentalDays) {
 
-                                    if (diffDays <= maxRentalDays) {
-                                        discount = discountPercentage
-                                    }
-                                }
-                                else if (minRentalDays && !maxRentalDays) {
-
-                                    if (diffDays >= minRentalDays) {
-                                        discount = discountPercentage
-                                    }
-                                }
-                                else {
-
+                                if (diffDays >= minRentalDays) {
                                     discount = discountPercentage
                                 }
                             }
                             else {
-                                return res.json({ error: "offer expired, plz resubmit" })
+
+                                discount = discountPercentage
                             }
                         }
                         else {
-                            return res.json({ error: "how is this possible" })
+                            return res.json({ error: "offer expired, plz resubmit" })
                         }
-
                     }
                     else {
-                        return res.json({ error: "offer expired, plz resubmit !" })
+
+                        return res.json({ error: "offer.discountedCarId doesn't matches with this car's id !" })
                     }
+
                 }
 
                 if (discount) {
@@ -771,7 +962,7 @@ async function run() {
                     { $inc: { bookingCount: 1 } }
                 )
 
-                res.json({ result })
+                res.json(result)
             }
             catch (err) {
                 res.json({ error: err.message })
@@ -813,16 +1004,6 @@ async function run() {
 
                     const result = await allOffer.insertOne(data)
 
-                    await allCar.updateOne(
-                        { _id: data.discountedCarId },
-                        {
-                            $set: {
-                                discountId: result.insertedId,
-                                discount: parseInt(data.discountPercentage)
-                            }
-                        }
-                    )
-
                     return res.json(result)
                 }
 
@@ -836,16 +1017,79 @@ async function run() {
         app.patch("/user", verifyToken, async (req, res) => {
 
             try {
-                let user = await allUser.updateOne(
-                    { _id: new ObjectId(req.user.id) },
+
+                const id = new ObjectId(req.user.id);
+                delete req.body.id;
+
+                if (req.body.lastLoginAt) {
+                    req.body.lastLoginAt = new Date(req.body.lastLoginAt)
+                }
+
+                let find = await allUser.findOne(
+                    { _id: id },
                     {
-                        $set: {
-                            ...req.body
+                        projection: {
+                            role: true,
+                            email: true
                         }
                     }
                 )
 
-                res.json({ user })
+                if (find.email === req.user.email) {
+
+                    let user = await allUser.updateOne(
+                        { _id: id },
+                        {
+                            $set: {
+                                ...req.body
+                            }
+                        }
+                    )
+
+                    const token = jwt.sign({ id: find?._id, email: find?.email }, jwtSecret);
+
+                    res.cookie("token", token, {
+                        httpOnly: true,
+                        secure: true,
+                        sameSite: 'none' // set secure : true
+                    })
+
+                    if (req.body.location) {
+
+                        res.cookie("location", req.body.location, {
+                            secure: true,
+                            sameSite: 'none'
+                        })
+                    }
+
+                    if (req.body.role) {
+
+                        res.cookie("role", req.body.role, {
+                            secure: true,
+                            sameSite: 'none'
+                        })
+                        res.cookie("location", req.location.role, {
+                            secure: true,
+                            sameSite: 'none'
+                        })
+                    }
+                    else {
+
+                        res.cookie("role", find.role, {
+                            secure: true,
+                            sameSite: 'none'
+                        })
+                        res.cookie("location", find.location, {
+                            secure: true,
+                            sameSite: 'none'
+                        })
+                    }
+
+
+                    return res.json(user)
+                }
+
+                res.json({ error: "user update failed !" })
             }
             catch (err) {
                 res.json({ error: err.message })
@@ -896,15 +1140,33 @@ async function run() {
                 const id = new ObjectId(req.params.id);
                 const result = await allBooking.findOne({ _id: id })
 
-                const car = await allCar.findOne(
-                    { _id: result.carId },
-                    {
-                        projection: {
-                            discountId: true,
-                            dailyPrice: true
-                        }
-                    }
-                )
+                const [car] = await allCar.aggregate(
+                    [
+                        {
+                            $match: { _id: result.carId }
+                        },
+                        {
+                            $lookup: {
+                                from: "all offers",
+                                localField: "_id",
+                                foreignField: "discountedCarId",
+                                as: "discountDetails"
+                            }
+                        },
+                        {
+                            $addFields: {
+                                offerData: { $arrayElemAt: ["$discountDetails", 0] }
+                            }
+                        },
+                        {
+                            $project: {
+                                dailyPrice: true,
+                                offerData: true
+                            }
+                        },
+                    ]
+                ).toArray()
+
 
                 if (car === null) {
                     return res.json({ error: "car not found !" })
@@ -961,7 +1223,7 @@ async function run() {
                                 return res.json(bookingResult)
                             }
 
-                            return res.json({ message: "cannot cancel confirmed boking after pickup date" })
+                            return res.json({ message: "cannot cancel confirmed booking after pickup date !" })
                         }
                     }
                     else if (req.body.pickupDate && req.body.dropoffDate) {
@@ -1022,64 +1284,45 @@ async function run() {
                             let discount = 0;
                             let totalPrice = 0;
 
-                            if (car.discountId) {
+                            if (car.offerData) {
 
-                                const offerExists = await allOffer.findOne(
-                                    { _id: car.discountId },
-                                    {
-                                        projection: {
-                                            discountedCarId: true,
-                                            discountPercentage: true,
-                                            validUntil: true,
-                                            minRentalDays: true,
-                                            maxRentalDays: true
+                                const { discountedCarId, discountPercentage, validUntil, minRentalDays, maxRentalDays } = car.offerData;
+
+                                if (discountedCarId.toString() === result.carId.toString()) {
+
+                                    if (Date.now() <= new Date(validUntil)) {
+
+                                        if (minRentalDays && maxRentalDays) {
+
+                                            if (diffDays >= minRentalDays && diffDays <= maxRentalDays) {
+                                                discount = discountPercentage
+                                            }
                                         }
-                                    }
-                                )
+                                        else if (!minRentalDays && maxRentalDays) {
 
-                                if (offerExists) {
-
-                                    const { discountedCarId, discountPercentage, validUntil, minRentalDays, maxRentalDays } = offerExists;
-
-                                    if (discountedCarId.toString() === result.carId.toString()) {
-
-                                        if (Date.now() <= validUntil) {
-
-                                            if (minRentalDays && maxRentalDays) {
-
-                                                if (diffDays >= minRentalDays && diffDays <= maxRentalDays) {
-                                                    discount = discountPercentage
-                                                }
+                                            if (diffDays <= maxRentalDays) {
+                                                discount = discountPercentage
                                             }
-                                            else if (!minRentalDays && maxRentalDays) {
+                                        }
+                                        else if (minRentalDays && !maxRentalDays) {
 
-                                                if (diffDays <= maxRentalDays) {
-                                                    discount = discountPercentage
-                                                }
-                                            }
-                                            else if (minRentalDays && !maxRentalDays) {
-
-                                                if (diffDays >= minRentalDays) {
-                                                    discount = discountPercentage
-                                                }
-                                            }
-                                            else {
-
+                                            if (diffDays >= minRentalDays) {
                                                 discount = discountPercentage
                                             }
                                         }
                                         else {
-                                            return res.json({ error: "offer expired, plz resubmit" })
+
+                                            discount = discountPercentage
                                         }
                                     }
                                     else {
-                                        return res.json({ error: "how is this possible" })
+                                        return res.json({ error: "offer expired, plz resubmit" })
                                     }
-
                                 }
                                 else {
-                                    return res.json({ error: "offer expired, plz resubmit !" })
+                                    return res.json({ error: "how is this possible" })
                                 }
+
                             }
 
                             if (discount) {
@@ -1270,19 +1513,6 @@ async function run() {
                             }
                         )
 
-                        if (req.body.discountPercentage) {
-
-                            allCar.updateOne(
-                                { _id: offer.discountedCarId },
-                                {
-                                    $set: {
-                                        discount: parseInt(req.body.discountPercentage)
-                                    }
-                                }
-                            )
-
-                        }
-
                         return res.json(offerUpdates)
                     }
 
@@ -1300,7 +1530,19 @@ async function run() {
         // DELETE
         app.delete("/jwt", async (req, res) => {
 
-            res.clearCookie("token")
+            res.clearCookie("token", {
+                httpOnly: true,
+                secure: true,
+                sameSite: 'none'
+            })
+            res.clearCookie("role", {
+                secure: true,
+                sameSite: 'none'
+            })
+            res.clearCookie("location", {
+                secure: true,
+                sameSite: 'none'
+            })
             res.json({ message: "cookie cleared" })
         })
 
@@ -1375,7 +1617,7 @@ async function run() {
 
     } finally {
 
-        console.log("finally")
+        console.log("Started finally")
     }
 }
 run().catch(console.dir);
@@ -1383,5 +1625,5 @@ run().catch(console.dir);
 
 
 app.listen(port, () => {
-    console.log(`app listening on port ${port}`)
+    console.log(`server is running on http://localhost:${port}/`)
 })
