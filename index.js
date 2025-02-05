@@ -45,7 +45,7 @@ const verifyToken = (req, res, next) => {
 
     }
     else {
-        res.status(401).json({ error: "token not found" })
+        res.status(401).json({ error: "token not found", timestamp: Date.now() })
     }
 }
 
@@ -148,6 +148,14 @@ async function run() {
                     })
                 }
 
+                res.set({
+                    'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+                    'Pragma': 'no-cache',
+                    'Expires': '0',
+                    'Surrogate-Control': 'no-store'
+                });
+
+                // browser caches reponse & sends a conditional request to the server (to check if reponse is same) & may avoid sending request as it knows response will be same.
                 res.json({ message: "user found" })
             }
             else {
@@ -758,7 +766,7 @@ async function run() {
                 res.cookie("token", token, {
                     httpOnly: true,
                     secure: true,
-                    sameSite: 'none' // set secure : true
+                    sameSite: 'none'
                 })
 
                 res.cookie("role", doc.role, {
@@ -1051,7 +1059,7 @@ async function run() {
                     res.cookie("token", token, {
                         httpOnly: true,
                         secure: true,
-                        sameSite: 'none' // set secure : true
+                        sameSite: 'none'
                     })
 
                     if (req.body.location) {
@@ -1543,7 +1551,7 @@ async function run() {
                 secure: true,
                 sameSite: 'none'
             })
-            res.json({ message: "cookie cleared" })
+            res.json({ message: "cookie cleared", timestamp: Date.now() })
         })
 
         app.delete("/car/:id", verifyToken, async (req, res) => {
